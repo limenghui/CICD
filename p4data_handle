@@ -1,0 +1,271 @@
+
+pipeline {
+
+        options {
+            timestamps()
+            timeout(activity: true, time:1, unit: 'HOURS')
+        }
+
+        agent {
+            node {
+                label "P4Integration"
+            }
+        }
+        parameters {
+            choice choices: ['//Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos/', '//Mabinogi_Eternity/'], description: '''Source path in nexon perforce to be merged
+        <li>Path //Mabinogi_Eternity/ indicates path <b>//Mabinogi_Eternity/Server/</b> and <b>//Mabinogi_Eternity/UE/Mabinogi/</b> and with //Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos/ excluded.</li>
+        <li>//Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos/</li>''', name: 'MergeSource'
+            string description: 'latest changeList of source stream merged already', name: 'LatestSyncedCL', trim: true
+        }
+
+        
+        environment {
+            // Python 3.12.7
+            J_PY_VIRTUAL_ENV = ".venv"
+            J_P4_2_P4_TOOLS = "E:\\tools\\p4_p4"
+            
+            // src p4 info
+            J_P4_PORT_SRC = "10.72.2.56:1666"
+            J_P4_CREDENTIAL_SRC = "wuyingying595"
+            J_P4_CHARSET_SRC = "none"
+            
+            // dst p4 info
+            J_P4_PORT_DST = "10.72.47.210:1666"
+            J_P4_CREDENTIAL_DST = "mabinogiP4"
+            J_P4_CHARSET_DST = "utf8"
+            DST_WORKSPACE = "E:\\vts_mabinogi_eternity_virtuos_content"
+            SRC_PATH = "//Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos"
+            SRC_STREAM = "//Mabinogi_Eternity"
+        }
+
+        stages {
+            
+            stage('Client info'){
+                steps {
+                    script {
+                        String hostname = powershell script: "hostname", returnStdout: true
+                        hostname = hostname.trim().tokenize('\r\n')[0]
+                        if(!hostname){
+                            currentBuild.result = "FAILURE"
+                            error('Can not get computer name.')
+                        }
+                        String clientSuffix = ""
+                        Map mergeInfo = [:]
+                        if(params.MergeSource == "//Mabinogi_Eternity/"){
+                            clientSuffix = 'mabinogi_eternity'
+                            // mergeInfo = eternityMergeInfo
+                        }else if(params.MergeSource == "//Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos/"){
+                            clientSuffix = 'mabinogi_eternity_virtuos_content'
+                            // mergeInfo = virtuosContentMergeInfo
+                        }
+                        p4StreamSRC = '//Mabinogi/Mabinogi_Eternity_Virtuos_Content'
+                        p4StreamDST = '//Mabinogi/Mabinogi_Eternity_Virtuos_Content'
+                        p4ClientSRC = "wuyingying595_${hostname}_${clientSuffix}"
+                        p4ClientDST = "svc.sha.mabinogi_${hostname}_${clientSuffix}"
+                    }
+                }
+            }
+            
+            stage('Change File'){
+                steps{
+                    script {
+                        DepotFileList = []
+                        DstFileList = []
+                        p4_exe = p4 credential: env.J_P4_CREDENTIAL_SRC, workspace: staticSpec(charset: env.J_P4_CHARSET_SRC, name: p4ClientSRC, pinHost: false)
+                        p4_client = p4 credential: env.J_P4_CREDENTIAL_DST, workspace: staticSpec(charset: env.J_P4_CHARSET_DST, name: p4ClientDST, pinHost: false)
+                        if(params.LatestSyncedCL){
+                            change_num = "${params.LatestSyncedCL}"
+                        } else{
+                            changes = p4_exe.run('changes','-m1', '//Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos/...#have')
+                            change_num = changes['change'][0]
+                            println "${change_num}"
+                        }
+                        checkout perforce(
+                            credential: env.J_P4_CREDENTIAL_SRC, 
+                            populate: syncOnly(
+                                force: false, have: true, modtime: false, 
+                                parallel: [enable: false, minbytes: '1024', minfiles: '1', threads: '4'], 
+                                pin: '', quiet: false, revert: true
+                            ), 
+                            workspace: staticSpec(charset: env.J_P4_CHARSET_SRC, name: p4ClientSRC, pinHost: false))
+
+                        checkout perforce(
+                            credential: env.J_P4_CREDENTIAL_DST, 
+                            populate: syncOnly(
+                                force: false, have: true, modtime: false, 
+                                parallel: [enable: false, minbytes: '1024', minfiles: '1', threads: '4'], 
+                                pin: '', quiet: false, revert: true
+                            ), 
+                            workspace: staticSpec(charset: env.J_P4_CHARSET_DST, name: p4ClientDST, pinHost: false))
+                       
+                        
+                        
+                        changelists = p4_exe.run('changes','-e',change_num, '//Mabinogi_Eternity/UE/Mabinogi/Content/Developers/virtuos/...')
+                        changes = changelists['change']
+                        changes.pop()
+                        latest_changelist = changes[0]
+                        reverse_change = changes.reverse()
+                        println "${reverse_change}"
+                        
+                        for(changelist in reverse_change){
+                            history_info = p4_exe.run('describe',changelist)
+                            Description = history_info[0]
+                            for(i in Description){
+                            value = i.toString()
+                            if(value.contains('depotFile')){
+                                fileSerialNum = value.split('=')[0].replace('depotFile','')
+                                fileKey = 'depotFile'+ "${fileSerialNum}"
+                                println "${fileKey}"
+                                filePath = value.split('=')[1]
+                               
+                                srcfilelist = [filePath,changelist]
+                                Src_File = srcfilelist.join('@=')
+                                println "${Src_File}"
+                                println "${fileSerialNum}"
+                                if(filePath.startsWith("${SRC_PATH}")){
+                                    DST_filePath = filePath.replace(SRC_STREAM,DST_WORKSPACE)
+                                    println "${DST_filePath}"
+                                    action_num =  
+                                    // printFiles(env.J_P4_CREDENTIAL_SRC, env.J_P4_PORT_SRC, Src_File.toString(),DST_filePath.toString())
+                                    // checkoutFiles(env.J_P4_CREDENTIAL_DST, env.J_P4_PORT_DST,DST_filePath.toString() )
+                                    result = p4_exe.run('print', '-o',DST_filePath.toString(), '-q',Src_File.toString())
+                                    println "${result}"
+                                    if(result['action'][0]=='edit'){
+                                        checkout_result = p4_client.run('edit', '-c', 'default', DST_filePath)
+                                    }
+                                    if(result['action'][0]=='add'){
+                                        checkout_result = p4_client.run('add','-d','-c', 'default', DST_filePath)
+                                    }
+                                    if(result['action'][0]=='delete'){
+                                        checkout_result = p4_client.run('delete','-c', 'default','-v', DST_filePath)
+                                    }
+                                    println "${result['action']}"
+                                    // checkout_result = p4_client.run('edit', '-c', 'default', DST_filePath)
+                                    // default_change = p4_client.run('reconcile')
+                                    // println "${default_change}"
+                                    DstFileList.add(DST_filePath)
+                                }
+                                // checkoutFiles(env.J_P4_CREDENTIAL_DST, env.J_P4_PORT_DST,DST_filePath.toString() )
+                                DepotFileList.add(value)
+                                
+                                
+                            }
+                        
+                            
+                        }
+                        
+                        }
+                       
+                        
+                        changeinfo = getChangemsg(env.J_P4_CREDENTIAL_DST, env.J_P4_PORT_DST, p4ClientDST) 
+                        description = "[Auto Sync][CL#${latest_changelist}] virtuos_content"
+						changeinfo[-2] = changeinfo[-2].replace(changeinfo[-2].split(':')[-1],"${description}")
+						writeFile(file: 'newCL.txt', text: changeinfo.join("\n\r\n").toString())
+						submit_changelist = submitCL(env.J_P4_CREDENTIAL_DST, env.J_P4_PORT_DST, p4ClientDST)
+						println "${submit_changelist}"
+                        println "${DepotFileList}"
+                        println "${DepotFileList.size()}"
+                        println "${DstFileList}"
+                        
+                    }
+                }
+                
+            }
+            
+            
+        }
+        // post {
+        //     failure {
+        //         emailext body: """
+        //             Check the console output at ${env.BUILD_URL}
+        //         """, 
+        //         mimeType: 'text/html',
+        //         subject: "[Mabinogi][P4Integration]-[${currentBuild.result}]", 
+        //         to: 'limenghui2733@virtuos.com.cn'
+        //     }
+        // }
+    }
+
+def getChangemsg(String credentialName, String p4Port,p4Client){
+    withCredentials([usernamePassword(credentialsId: credentialName, passwordVariable: 'psd', usernameVariable: 'user')]) {
+        bat label: 'p4 set', script: """
+            set P4PORT=${p4Port}
+            set P4Client=${p4Client}
+            set P4USER=%user%
+            echo %psd%| p4 login
+            p4 change -o >newCL.txt
+        """
+
+    def changes = readFile("newCL.txt").split("\n\r\n") 
+    return changes
+    // println "changes in changes.txt: ${changes}"
+    }
+    
+    
+}
+
+def createNewCL(String credentialName, String p4Port,p4Client){
+    withCredentials([usernamePassword(credentialsId: credentialName, passwordVariable: 'psd', usernameVariable: 'user')]) {
+        bat label: 'p4 set', script: """
+            set P4PORT=${p4Port}
+            set P4Client=${p4Client}
+            set P4USER=%user%
+            echo %psd%| p4 login
+            p4 change -i <newCL.txt
+        """
+        def changelist = readFile("newCL.txt").split(' ')[1]
+        return changelist
+    }
+    
+}
+def submitCL(String credentialName, String p4Port,p4Client){
+    withCredentials([usernamePassword(credentialsId: credentialName, passwordVariable: 'psd', usernameVariable: 'user')]) {
+        bat label: 'p4 set', script: """
+            set P4PORT=${p4Port}
+            set P4Client=${p4Client}
+            set P4USER=%user%
+            echo %psd%| p4 login
+            p4 submit -f submitunchanged -i <newCL.txt
+        """
+        def changelist = readFile("newCL.txt").split(' ')[1]
+        return changelist
+    }
+    
+}
+
+@NonCPS
+def stripBrackets(String str) {
+    return str.replaceAll('^\\[|\\]$', '')
+}
+
+def getLatestMergedCL(String credentialName, String p4Port, String p4Stream){
+    
+    String latestSyncedCL = ""
+    def pattern = ~/CL#\d+/
+    
+    withCredentials([usernamePassword(credentialsId: credentialName, passwordVariable: 'psd', usernameVariable: 'user')]) {
+        bat label: 'p4 set', script: """
+            set P4PORT=${p4Port}
+            set P4USER=%user%
+            echo %psd%| p4 login
+            del changes.txt /f
+            p4 changes -m1 -l -s submitted -u %user% ${p4Stream}/...>changes.txt
+        """
+        def changes = readFile file: "changes.txt"
+        println "changes in changes.txt: ${changes}"
+        if(changes){
+            String desc = changes.trim().tokenize('\r\n')[-1].trim()
+            println "desc: ${desc}"
+            def matcher = pattern.matcher(desc)
+            if(matcher.size() > 0){
+                latestSyncedCL =  matcher[0].replace('CL#','')
+                println "Last CL integrated: ${latestSyncedCL}"
+            }
+        }
+    }
+    return latestSyncedCL
+}
+
+
+
+    
