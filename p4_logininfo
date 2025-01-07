@@ -1,0 +1,17 @@
+class p4LoginInfo(object):
+    #port = "10.0.0.44:1666"
+    #user = "whe"
+    #client = "phx_whe_dev-main-noart_cnshaw1718"
+ 
+    def __init__(self):
+        import os
+
+        loginFilesPath = os.path.dirname(os.path.abspath(__file__))+"\p4LoginInfo.txt"
+        if os.path.isfile(loginFilesPath):
+            with open(loginFilesPath) as f:
+                lines = f.readlines()
+                self.port = lines[0].split('=')[1].strip()
+                self.user = lines[1].split('=')[1].strip()
+                self.client = lines[2].split('=')[1].strip()
+        else:
+            print("IOError: Login File not exist------") 
