@@ -1,0 +1,105 @@
+pipeline {
+    agent {
+		label {
+			label 'Check'
+			customWorkspace 'workspace/CompileLSAPipeline/'
+			retries 2
+		}
+	}
+	environment {
+        CurrentTime = 0
+    }
+	options { skipDefaultCheckout() }
+    stages {
+		
+		stage('BuildEditor') {
+		    options { 
+		        retry(2)
+		    }
+			steps {
+				script{
+					CurrentTime=currentBuild.duration
+				}
+				// One or more steps need to be included within the steps block.
+				//Set Current Client
+				bat 'p4 set p4client=jenkins-%NODE_NAME%-\"${currentBuild.fullDisplayName}\"-%EXECUTOR_NUMBER%'
+				//show p4 info
+				bat 'p4 info'
+				//echo 'Build Editor'
+				bat '''if not exist "%WORKSPACE%\\Engine\\Build\\BatchFiles\\GenerateProjectFiles.bat" goto Error_BatchFileInWrongLocation
+					call "%WORKSPACE%\\Engine\\Build\\BatchFiles\\GenerateProjectFiles.bat" %*
+					%WORKSPACE%\\Engine\\Build\\BatchFiles\\RunUAT.bat BuildGraph -Script=Engine/Build/Graph/Examples/PackageProjectlsa.xml -Target="CompileProjectEditorTargetWin64"'''
+			}
+			
+		}
+		
+		stage('Clean Unshelved Files') {
+			steps  {
+			    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+			        
+			 
+				    script{
+				        p4_exe =p4(credential: 'bfcb9fef-ac89-4c71-9c43-48ee0a028957', populate: autoClean(delete: false, modtime: false, parallel: [enable: true, minbytes: '589824', minfiles: '9', threads: '12'], pin: '', quiet: true, replace: false, tidy: false), workspace: staticSpec(charset: 'utf8', name: env.P4_CLIENT,, pinHost: false))
+					    ShelvedCL = getChanges()
+					    ShelvedInfo =  p4_exe.run('describe', '-S', ShelvedCL)[0]
+					    println "${ShelvedInfo}"
+					    for(i in ShelvedInfo){
+                            value = i.toString()
+                            if(value.contains('depotFile')){
+                                fileSerialNum = value.split('=')[0].replace('depotFile','')
+                                filePath = value.split('=')[1] + '#head'
+                                println "${filePath}"
+                                result = p4_exe.run('sync', '-f', filePath)
+                                println "${result}"
+                            }
+					    }
+				    }
+			    }
+				//echo 'TestBlueprint'
+				
+			}
+			
+		}
+	}
+	post{
+	    
+		success{
+				bat "python %WORKSPACE%\\Projectlsa\\Script\\Jenkins\\JenkinsProjectReportToWechat.py https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=8b620fa6-8a0e-40bb-9f0f-0fc660de4eda %BUILD_URL% %BUILD_ID% %NODE_NAME% \"${currentBuild.fullDisplayName}\" End 0 %P4_CHANGELIST% 2 2 ${currentBuild.duration} //LSA/Dev-Main"
+		}
+		
+		failure{
+				bat "python %WORKSPACE%\\Projectlsa\\Script\\Jenkins\\JenkinsProjectReportToWechat.py https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=8b620fa6-8a0e-40bb-9f0f-0fc660de4eda %BUILD_URL% %BUILD_ID% %NODE_NAME% \"${currentBuild.fullDisplayName}\" End 4 %P4_CHANGELIST% 2 2 ${currentBuild.duration} //LSA/Dev-Main"
+		}
+		aborted{
+				bat "python %WORKSPACE%\\Projectlsa\\Script\\Jenkins\\JenkinsProjectReportToWechat.py https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=8b620fa6-8a0e-40bb-9f0f-0fc660de4eda %BUILD_URL% %BUILD_ID% %NODE_NAME% \"${currentBuild.fullDisplayName}\" End 5 %P4_CHANGELIST% 2 2 ${currentBuild.duration} //LSA/Dev-Main"
+		}
+	}
+}
+
+@NonCPS
+def getChanges()
+{
+    MAX_MSG_LEN = 100
+    def changeString = ""
+    def list = []
+    def changeLogSets = currentBuild.changeSets
+    for (int i = 0; i < changeLogSets.size(); i++) 
+    {
+        def entries = changeLogSets[i].items
+        for (int j = 0; j < entries.length; j++)
+        {
+            def entry = entries[j]
+            commitID = entry.getCommitId()
+            list.add(commitID)
+            // println "commitID :${list}"
+            change_msg = entry.msg.take(MAX_MSG_LEN)
+            changeString += j + ": ${change_msg} \n"
+        }
+    }
+    if (!changeString)
+    {
+        changeString = " No changes "
+    }
+    shelveCL = list[0]
+    return shelveCL  
+}
