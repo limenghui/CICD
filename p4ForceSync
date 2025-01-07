@@ -1,0 +1,48 @@
+import os
+import sys
+from p4LoginInfo import p4LoginInfo
+from P4 import P4,P4Exception
+
+WORKSPACE = "d:\\jenkins_node\\workspace\\limenghui_cnshaw2609_9721"
+STREAM_NAME = "//TestStream/Main"
+
+def getshelvefiles(shelvedCL):
+    #shelveFileList = []
+    info = p4.run("describe", "-S", shelvedCL)
+    for outLine in info:
+        if type(outLine) is dict:
+            if 'depotFile' in outLine:
+                return outLine['depotFile']
+                
+
+def p4forcesync(target):
+    p4.run("sync", "-f", target)
+    
+   
+                
+                  
+
+if __name__ == "__main__":
+    p4Info = p4LoginInfo()
+
+    p4 = P4()    
+    p4.port = p4Info.port
+    p4.user = p4Info.user
+    p4.client = p4Info.client 
+    p4.connect()
+
+    shelveFileList = []
+    if len(sys.argv) > 1:
+        shelveCLs = sys.argv[1:]
+    else:
+        print("please provide shelve changelist")
+    for cl in shelveCLs:
+        filelists = getshelvefiles(cl)
+        
+        for i in range(0, len(filelists)):
+            targetfile = filelists[i].replace(STREAM_NAME , WORKSPACE).replace("/", "\\")+"#head"
+            print("targetfile: ", targetfile)
+            p4forcesync(targetfile)        
+    
+
+    
