@@ -1,0 +1,399 @@
+pipeline {
+    agent {label "${params.Node}"}
+   
+	options {
+		timestamps ()
+// 		throttleJobProperty(
+//             categories: ['throttle_category'],
+//             throttleEnabled: true,
+//             throttleOption: 'category'
+//         )
+// 		disableConcurrentBuilds()
+	}
+	parameters {
+// 		booleanParam(name: 'P4Unshelve', defaultValue: false, description: '')
+        choice(name: 'Node', choices: ['cnshaw2845','cnshaw2847','cnshaw2840'], description: 'Node name')
+		string(name: 'shelvedChangList', defaultValue: '74250', trim: true, description: 'Additional P4 pending changelist to unshelve before building editor and game, comma-separated.')
+		choice(name: 'Platform', choices: ['PS5','WindowsNoEditor'], description: 'Target platform to build the game for, non-Windows platforms additionally unshelves CL 91167 from Ultizero to disable NV_RAYTRACING.')
+		choice(name: 'BuildConfig', choices: ['Development','Test','Shipping'], description: 'Configuration')
+		booleanParam(name: 'IterativeCook', defaultValue: false, description: '')
+		booleanParam(name: 'PGOProfile', defaultValue: false, description: '')
+        string(name: "BuildFromChangelist", defaultValue: '', description: "Perforce Changelist number to build from")
+	}
+	environment{
+	    PROJECT_NAME = 'Rocker'
+	    BRANCH_NAME = 'Dev_Main'
+	    //WORKSPACE='f:\\work\\p4'
+	    WORKSPACE="${J_WORKSPACE}"
+	    INIFILE_PATH="${WORKSPACE}\\Projectlsa\\Config\\DefaultLSAVersionConfigSettings.ini"
+	   // P4CLIENT = "LSA_VirtuosGames_cnshaw2840"
+	    LOCAL_BUILD_PATH = "${WORKSPACE}\\Projectlsa\\ArchivedBuilds"
+	    DAILY_BUILD_DEST = "\\\\cnshaw2840\\Builds\\DailyBuild"
+	    DELIVER_XA_PKG = "\\\\cnshaw2847\\Rocker_Deliver_XA"
+	    STAGE_FILE = "${WORKSPACE}\\Projectlsa\\Saved\\StagedBuilds\\${params.Platform}\\projectlsa\\binaries\\${params.Platform}"
+	    PS5_SHADER_DBG_ARCHIVE = "${WORKSPACE}\\Projectlsa\\Saved\\ShaderDebugInfo\\SF_PS5\\agsd\\agsd.zip"
+	   
+	}
+
+    stages {
+        
+        stage('Checkout P4 Latest') {
+            
+            steps {
+                    checkout perforce(
+                        credential: 'p4_jenkins_credential',
+                        workspace: staticSpec(
+                            charset: 'utf8',
+                            name: env.P4CLIENT,
+                            pinHost: false),
+                        populate: syncOnly(
+                            force: false,
+                            have: true,
+                            modtime: false,
+                            quiet: false,
+                            revert: true,
+                            pin: "${params.BuildFromChangelist}",
+                            parallel: [
+                                enable: false,
+                                threads: '8',
+                                minfiles: '1',
+                                minbytes: '1']))
+                    
+                    script {
+                        CHANGELIST = "${env.P4_CHANGELIST}_${params.shelvedChangList}"
+                        echo "CHANGELIST: ${CHANGELIST}"
+                       
+                        currentBuild.description = "${params.Node}"
+                        // changes = getChanges()
+                        // println "${changes}"
+                    }
+                
+            }
+        }
+        
+        stage("Unshelve") {
+            steps {
+                script {
+                    def shelves = params.shelvedChangList.split(",").collect { it.trim() }.findAll()
+                    // Add shelved CL 91167 from Ultizero for non-Windows builds to disable NV_RAYTRACING for editor
+                    if (params.Platform != "WindowsNoEditor")
+                        shelves << "91167";
+                    def shelvesStr = shelves.join("+")
+                    echo "unshelve change: ${shelvesStr}"
+                    for (cl in shelves)
+                    {
+                        p4unshelve(
+                                credential: 'p4_jenkins_credential', 
+                                ignoreEmpty: false, 
+                                resolve: 'am', 
+                                shelf: "${cl}", 
+                                tidy: false, 
+                                workspace: staticSpec(
+                                    charset: 'utf8', 
+                                    name: env.P4CLIENT, 
+                                    pinHost: false))
+                    }
+                    // currentBuild.displayName = "${env.BRANCH_NAME}_VTS_${params.Node}_${env.BUILD_NUMBER}_CL${P4_CHANGELIST}_S${shelvesStr}_${params.Platform}_${params.BuildConfig}"
+                    currentBuild.displayName = "${env.BUILD_NUMBER}_CL${P4_CHANGELIST}_S${shelvesStr}_${params.Platform}_${params.BuildConfig}"
+                    env.BuildStr = "${env.BRANCH_NAME}_VTS_${params.Node}_${env.BUILD_NUMBER}_CL${P4_CHANGELIST}_S${shelvesStr}_${params.Platform}_${params.BuildConfig}"
+
+                    // UNSHELVED = true
+                    // P4_CHANGELIST = params.BuildFromP4Shelve
+                }
+            }
+        }
+        
+        stage("Update LSAVersionConfig ini") {
+            
+            steps {
+                script {
+                    content =UpdateLSAVersion("${env.INIFILE_PATH}", "LSAPackageVersion","${currentBuild.displayName}")
+                    echo "File contents: ${content}"
+                    bat(script:"attrib -R  ${env.INIFILE_PATH}")
+                    writeFile(file:"${env.INIFILE_PATH}", text:content.join('\n'), encoding:'utf-8')
+                    
+                    
+                }
+            }
+        }
+        
+        
+        stage('Clean Compile Code') {
+            steps {
+                script {
+                    try {
+                        def platform = ''
+                        switch (params.Platform) {
+                            case 'WindowsNoEditor':
+                                platform = '-platform=Win64'
+                                break
+                            case 'PS5':
+                                platform = '-platform=PS5'
+                                break
+                            
+                        }
+                        bat """
+                            %WORKSPACE%\\Engine\\Build\\BatchFiles\\RunUAT.bat \
+                                BuildCookRun \
+                                -project=Projectlsa\\Projectlsa.uproject \
+                                -noP4 \
+                                -unversionedcookedcontent \
+                                -compile \
+                                -compileeditor \
+                                ${platform} \
+                                -clientconfig=${params.BuildConfig} \
+                                -build \
+                                -CrashReporter \
+                                -clean \
+                        """
+                        
+                    }
+                    catch (err) {
+                        echo "${err}"
+                        currentBuild.result = 'SUCCESS' // For testing purposes, we still want latter stages to execute even if it's failed.
+                    }
+                }
+            }
+        }
+        stage('BuildCook') {
+            steps {
+                // catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                    script {
+                        
+                        
+                        
+                        def platform = ''
+                        switch (params.Platform) {
+                            case 'WindowsNoEditor':
+                                platform = '-platform=Win64'
+                                break
+                            case 'PS5':
+                                platform = '-platform=PS5'
+                                break
+                           
+                        }
+                        
+                        def action = "-build -cook -compressed -stage -pak -package -archive"
+                        if (params.IterativeCook){
+                            action += " -iterativecooking"
+                        }
+                        if (params.PGOProfile){
+                            action += " -ubtargs=-PGOProfile"
+                        }
+                        
+                        if(params.Status.equals("Link Time Optimization")){
+                            optimization = '-ubtargs=-LTCG'
+                            println "${params.RelatedValue}"
+                            if(params.RelatedValue.equals("Thin Link Time Optimization")){
+                                optimization +=" -ThinLTO"   
+                            }
+                        }else{
+                            optimization =' '
+                        }
+                        println "build parameters : ${env.BuildStr}"
+                        bat """
+                            %WORKSPACE%\\Engine\\Build\\BatchFiles\\RunUAT.bat \
+                                BuildCookRun \
+                                -project=Projectlsa\\Projectlsa.uproject \
+                                -noP4 \
+                                ${platform} \
+                                -clientconfig=${params.BuildConfig} \
+                                ${action} \
+                                ${optimization} \
+                                -BuildInfo=${env.BuildStr} \
+                                
+                        """
+                        
+                        // Output build info for users to quickly identify which build to use.
+                        
+                    }
+                // }
+            }
+        }
+        stage('Clean Unshelved Files') {
+			steps  {
+			    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+			        
+			 
+				    script{
+				        p4_exe=p4(credential: 'p4_jenkins_credential',
+                        workspace: staticSpec(
+                            charset: 'utf8',
+                            name: env.P4CLIENT,
+                            pinHost: false)
+                        )
+                        def shelves = params.shelvedChangList.split(",").collect { it.trim() }.findAll()
+                    
+                        if (params.Platform != "WindowsNoEditor")
+                            shelves << "91167";
+                        result = p4_exe.run('revert','-w','\\...')
+                        println "${result}"
+					   // ShelvedCL = getChanges()
+					   for(cl in shelves){
+					       ShelvedInfo =  p4_exe.run('describe', '-S', cl)[0]
+					       println "${ShelvedInfo}"
+					       for(i in ShelvedInfo){
+                                value = i.toString()
+                                if(value.contains('depotFile')){
+                                    fileSerialNum = value.split('=')[0].replace('depotFile','')
+                                    filePath = value.split('=')[1] + '#head'
+                                    println "${filePath}"
+                                    p4_exe.run('sync', '-f', filePath)
+                                }
+					        }
+					   }
+					    
+					    
+				    }
+			    }
+				//echo 'TestBlueprint'
+				
+			}
+			
+		}
+        stage('copy output to the shared folder') {
+            environment {
+                BUILD_NAME = "${BUILD_NUMBER}-${env.P4_CHANGELIST}-${params.Platform}"
+                DAILY_SHARE_FOLDER = "${DAILY_BUILD_DEST}\\${BUILD_NAME}\\${params.Platform}"
+                FINAL_BUILD_PATH = "${LOCAL_BUILD_PATH}\\${params.Platform}"
+            }
+            steps {
+                script {
+                    currentBuild.description = "${DAILY_SHARE_FOLDER}"
+                   
+                    if (params.Platform == "PS5") {
+                        bat """
+                            robocopy %FINAL_BUILD_PATH% %DAILY_SHARE_FOLDER% /S /NP /MOVE
+                            robocopy %STAGE_FILE% %DAILY_SHARE_FOLDER%\\stagefile /S /NP /MOVE
+                            mkdir %DAILY_SHARE_FOLDER%\\ShaderDebugInfo
+                            xcopy %PS5_SHADER_DBG_ARCHIVE% %DAILY_SHARE_FOLDER%\\ShaderDebugInfo /J
+                        """
+                    }
+                    if (params.Platform == "WindowsNoEditor") {
+                        bat """
+                            robocopy %FINAL_BUILD_PATH% %DAILY_SHARE_FOLDER% /S /NP /MOVE
+                            if %ERRORLEVEL% GTR 7 (
+                                exit 1
+                            )else (
+                                exit /B 0
+                            )
+                        """
+                    }
+                }
+            }
+        }
+        stage('copy pkg to deliver to xa') {
+            environment {
+                BUILD_NAME = "${BUILD_NUMBER}-${env.P4_CHANGELIST}-${params.Platform}"
+                DAILY_SHARE_FOLDER = "${DAILY_BUILD_DEST}\\${BUILD_NAME}\\${params.Platform}"
+                FINAL_BUILD_PATH = "${DELIVER_XA_PKG}\\${params.Platform}"
+            }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                    script {
+                        if (params.Platform == "PS5" && params.BuildConfig == "Test") {
+                            bat """
+                                robocopy %DAILY_SHARE_FOLDER% %FINAL_BUILD_PATH% *.pkg /S /NP
+                                robocopy %DAILY_SHARE_FOLDER% %FINAL_BUILD_PATH% *.json /S /NP
+                            
+                            """
+                        }
+                        if (params.Platform == "WindowsNoEditor" && params.BuildConfig == "Test") {
+                            bat """
+                                robocopy %DAILY_SHARE_FOLDER% %FINAL_BUILD_PATH% /S /NP
+                                if %ERRORLEVEL% GTR 7 (
+                                    exit 1
+                                )else (
+                                    exit /B 0
+                                )
+                            """
+                        }
+                    }
+                }
+                
+            }
+        }
+    }
+    post{
+        success{
+            script{
+                emailext subject: "[${env.PROJECT_NAME}] [${currentBuild.result}] ${env.JOB_NAME}_${env.BUILD_NUMBER}",
+                body: '${SCRIPT,template="managed:Groovy Email Template"}',
+                to: "_Rocker_All@virtuos.com.cn"
+            }
+        }
+        failure{
+            script{
+                emailext subject: "[${env.PROJECT_NAME}] [${currentBuild.result}] ${env.JOB_NAME}_${env.BUILD_NUMBER}",
+                body: '${SCRIPT,template="managed:Groovy Email Template"}',
+                to: '_Rocker_All@virtuos.com.cn'
+            }
+        }
+    }
+}
+
+def UpdateLSAVersion(filename,key,newvalue){
+    
+    def content = readFile(filename).split('\\n')
+    def updatecontent = []
+    for (line in content){
+        if(line.startsWith(key)){
+            value = line.split("=")[1]
+            line = line.replace(value,newvalue)
+        
+        }
+        updatecontent.add(line)
+    }
+    return updatecontent
+    
+}
+
+def CookCommandlet(platform,buildconfig,buildinfo){
+    def args = "%WORKSPACE%\\Engine\\Build\\BatchFiles\\RunUAT.bat"
+        args +="BuildCookRun"
+        args +=" -project=Projectlsa\\Projectlsa.uproject"
+        args +=" -noP4"
+        args +=" -unversionedcookedcontent"
+        args +=" -compile"
+        args +=" -compileeditor"
+        args +=" -clientconfig=${params.BuildConfig}"
+        args +=" -build"
+        args +=" -CrashReporter"
+        args +=" -clean"
+    if(params.Platform=='PS5'){
+        args +=" -platform=PS5 -BuildInfo=${buildinfo}"
+    }else{
+        args +="-platform=Win64"
+    }
+    
+    
+    bat(args)
+}
+
+@NonCPS
+def getChanges()
+{
+    MAX_MSG_LEN = 100
+    def changeString = ""
+    def list = []
+    def changeLogSets = currentBuild.changeSets
+    for (int i = 0; i < changeLogSets.size(); i++) 
+    {
+        def entries = changeLogSets[i].items
+        for (int j = 0; j < entries.length; j++)
+        {
+            def entry = entries[j]
+            commitID = entry.getCommitId()
+            list.add(commitID)
+            println "commitID :${list}"
+            change_msg = entry.msg.take(MAX_MSG_LEN)
+            changeString += j + ": ${change_msg} \n"
+        }
+    }
+    if (!changeString)
+    {
+        changeString = " No changes "
+    }
+    shelveCL = list[0]
+    return shelveCL  
+}
