@@ -1,0 +1,203 @@
+
+import java.text.SimpleDateFormat
+import groovy.xml.MarkupBuilder
+pipeline {
+    agent {label 'cnshaw2847'}
+   
+	options {
+		timestamps ()
+		disableConcurrentBuilds()
+	}
+	
+	parameters {
+		string(name: 'shelvedChangList', defaultValue: '74250,87110,83053', trim: true, description: 'Add more params for BuildCookRun')
+// 		choice(name: 'Platform', choices: ['PS5','WindowsNoEditor'], description: 'Target')
+// 		choice(name: 'BuildConfig', choices: ['Development','Test','Shipping'], description: 'Configuration')
+        booleanParam(name: 'P4_Sync', defaultValue: true, description: '')
+        booleanParam(name: 'Editor_Compile', defaultValue: true, description: '')
+// 		booleanParam(name: 'IterativeCook', defaultValue: false, description: '')
+        // string(name: "BuildFromChangelist", defaultValue: '', description: "Perforce Changelist number to build from")
+        choice(name: 'Quality_value', choices: ['Production','Preview','Medium','High'], description: 'Configuration')
+		booleanParam(name: 'AutoSubmit', defaultValue: true, description: '')
+		booleanParam(name: 'Test', defaultValue: false, description: '')
+		
+        
+	}
+	environment{
+	    PROJECT_NAME = 'Rocker'
+	    CUSTOM_WORKSPACE='d:\\work\\p4'
+	}
+
+    stages {
+        
+        stage('get map bake content') {
+            steps{
+                script {
+                    p4_exe=p4(credential: 'p4_jenkins_credential',
+                        workspace: staticSpec(
+                            charset: 'utf8',
+                            name: env.P4CLIENT,
+                            pinHost: false)
+                        )
+                        
+                    // def mapdict = getMapName('Bake_light_map.txt')
+                    // mapdict.every{
+                    //     println it.value
+                    // }
+                    
+                    
+                    def dateFormat = 'yyyy-MM-dd'
+                    def simpleDateFormat = new SimpleDateFormat(dateFormat)
+                    changes_content = p4_exe.run('changes','-l','-u','RONG','@2024/11/14,@now')
+                    // Detail_Content="${changes_content}"
+                    def MapDict=[:]
+                    // def filePath = "Bake_light_map.txt"
+                    // def titleString = fillWithSpaces("MapName",40) + fillWithSpaces("UpdateDate",25)+fillWithSpaces("Status",25) +fillWithSpaces("LastestSuccess_Date",25)
+                    def list=[]
+                    def list_name = []
+                    def list_date = []
+                    def list_status = []
+                    def contentlist = []
+                    def mapNameList = []
+                    // contentlist.add(titleString)
+                    
+                    for(def item : changes_content) {
+                        for (String key : item.keySet()) {
+		                     value = item.get(key)
+		                     if(value.equals("RenderMachine_Dev_Main")){
+		                         list.add(item)
+		                      //   println ("Key: " + key + " Value: " + value)
+		                     }
+		                     
+	                    } 
+                    }
+                    // println list
+                    for(value in list){
+                        description=value.getAt("desc")
+                        timestamp=value.getAt("time").toLong()
+                            // def date = new Date(timestamp)
+                        Date date = new Date(timestamp*1000)
+                        def Date_value = simpleDateFormat.format(date)
+                        MapDict["Date"]=Date_value
+                        if(description.startsWith("Rebuild lightmaps.")){
+                             details = description.split('\\n')
+                             for(detail in details){
+                                realvalue=detail.trim()
+                                if(realvalue.startsWith("AutoRebuildLightingMaps")){
+                                    if(realvalue.contains("sublevel")){
+                                        // println realvalue
+                                        othervalue=realvalue.split(",")[0]
+                                        // println othervalue
+                                        Status=othervalue.split(" ")[-1]
+                                        MapDict["Status"]=Status
+                                    }else{
+                                        Status=realvalue.split(" ")[-1]
+                                        MapDict["Status"]=Status
+                                    }
+                                    
+                                    
+                                }
+                                if(realvalue.endsWith("umap")){
+                                    
+                                    Mapname = realvalue.split('/')[-1]
+                                    
+                                    MapDict["Mapname"]=Mapname.split(/\./)[0]
+                                        
+
+                                }
+                                
+                                
+                                
+                            }
+                            
+                            list_name.add(MapDict["Mapname"].toString())
+                            
+                            list_date.add(MapDict["Date"].toString())
+                            
+                            list_status.add(MapDict["Status"].toString())
+                            
+                            // content =fillWithSpaces(MapDict["Mapname"].toString(),40) + fillWithSpaces(MapDict["Date"].toString(),25)+fillWithSpaces(MapDict["Status"].toString(),25)
+                            // file.append(content)
+                            // content = [MapDict["Mapname"].toString(),MapDict["Date"].toString(),MapDict["Status"].toString()]
+                            // println content
+                            // contentlist.add(content)
+                        }
+                    }
+                    
+                    // println contentlist
+                    println list_name
+                    println list_date
+                    println list_status
+                    // writeFile file: filePath, text: contentlist.join('\n')
+                    bat "E:\\Tool\\python\\python.exe test.py ${list_name}/${list_date}/${list_status}"
+                    
+                }
+                   
+            }
+        }
+    }
+        
+        
+        
+    
+    
+}
+import java.text.SimpleDateFormat
+
+def getErrorMessagae(values){
+    def error_details=''
+        
+    for(value in values){
+        realvalue=value.trim()
+                
+        if(realvalue.startsWith("Sublevel")){
+            error_details += realvalue
+        }
+    }
+    return error_details
+}
+def getBuildDate(timestamp){
+    Date date = new Date(timestamp*1000)
+    def formattedDate = simpleDateFormat.format(date)
+    return formattedDate
+}
+def extractDataWithinSquareBrackets(String text) {
+    def pattern = /(?<=\[)(.*?)(?=\])/
+    def matcher = text =~ pattern
+    def results = matcher.collect { it[0] }
+    return results
+}
+
+ 
+def fillWithSpaces(String str, int targetLength) {
+    while (str.length() < targetLength) {
+        str += ' '
+    }
+    return str
+}
+def getMapName(file){
+    def maplist = []
+    def fileContent = readFile(file)
+    lines = fileContent.split('\n')
+    // for(line in lines){
+    //     // mapname = line.split(' ')[0]
+    //     // maplist.add(mapname)
+    //     // println line
+    //     def valuelist=line.split(' ')
+    //     // println valuelist[0],value[1]
+    //     maplist.add(valuelist)
+        
+    // }
+    // for(map in maplist){
+    //     println map[0]
+    // }
+    // println maplist
+   def dict = lines.collectEntries { 
+        it.split(' ').collect()
+    }
+    return dict
+}
+
+def updateMapContent(mapname){
+    
+}
