@@ -1,0 +1,45 @@
+1.install java & jenkins
+   sudo dnf update -y
+   sudo dnf install -y epel-release
+   sudo dnf install -y java-11-openjdk-devel
+
+    sudo wget -O /etc/yum.repos.d/jenkins.repo \
+    https://pkg.jenkins.io/redhat-stable/jenkins.repo
+    sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+    sudo dnf install -y jenkins
+
+2. Generate Java keystore
+        sudo keytool -genkey -keyalg RSA -alias jenkins -keystore /var/lib/jenkins/jenkins.jks -dname "CN=localhost, OU=OU_name, O=OU_name, L=city, ST=State_name, C=two_letter_country_code" -ext SAN=dns:localhost,dns:cnshaw1053,ip:10.0.16.12 -storepass changeit -keypass changeit -validity 365 -keysize 2048
+
+   Edit Jenkins configuration
+        sudo nano /etc/systemd/system/jenkins.service
+   Add/modify these line
+       JENKINS_PORT="-1"
+       JENKINS_HTTPS_PORT="8443"
+       JENKINS_HTTPS_KEYSTORE="/var/lib/jenkins/jenkins.jks"
+       JENKINS_HTTPS_KEYSTORE_PASSWORD="changeit"
+    Set permissions   
+       sudo chown jenkins:jenkins /var/lib/jenkins/jenkins.jks
+    Start and enable Jenkins
+        sudo systemctl start jenkins
+        sudo systemctl enable jenkins
+
+查看 Jenkins 实际运行时使用的端口
+     ps aux | grep jenkins
+
+使用firewall-cmd 开放端口
+1.检查防火墙状态：
+   sudo systemctl status firewalld
+  确保firewalld正在运行，如果没有运行，先启动
+    sudo systemctl start firewalld
+    sudo systemctl enable firewalld  # 设置开机自启
+
+  临时开放8443端口（立即生效，重启后失效）
+    sudo firewall-cmd --add-port=8443/tcp
+
+  永久开放8443端口（重启后仍有效）
+     sudo firewall-cmd --add-port=8443/tcp --permanent
+   重新加载防火墙规则
+     sudo firewall-cmd --reload
+    验证端口是否生效
+     sudo firewall-cmd --list-ports
